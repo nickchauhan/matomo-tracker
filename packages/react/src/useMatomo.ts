@@ -41,7 +41,6 @@ function useMatomo() {
 
   const pushInstruction = useCallback(
     (name: string, ...args: any[]) => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       instance?.pushInstruction(name, ...args)
     },
     [instance],

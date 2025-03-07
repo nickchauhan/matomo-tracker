@@ -20,15 +20,11 @@
     "declaration": true,
     "declarationMap": true,
     "strictNullChecks": true,
-    "suppressImplicitAnyIndexErrors": true,
     "noUnusedLocals": true,
     "allowSyntheticDefaultImports": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "strict": true
   },
-  "references": [
-    { "path": "packages/js" },
-    { "path": "packages/react" }
-  ]
+  "references": [{ "path": "packages/js" }, { "path": "packages/react" }]
 }

@@ -5,7 +5,6 @@ import { MatomoInstance } from './types'
 export interface MatomoProviderProps {
   children?: React.ReactNode
   value: MatomoInstance
-  children: React.ReactNode
 }
 
 const MatomoProvider: React.FC<MatomoProviderProps> = function ({
