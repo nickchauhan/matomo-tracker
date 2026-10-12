@@ -14,17 +14,21 @@ import {
 } from './types'
 
 class MatomoTracker {
-  mutationObserver?: MutationObserver
+  private mutationObserver?: MutationObserver
+  private trackedElements = new WeakSet<HTMLElement>()
 
   constructor(userOptions: UserOptions) {
+    this.validateOptions(userOptions)
+    this.initialize(userOptions)
+  }
+
+  private validateOptions(userOptions: UserOptions): void {
     if (!userOptions.urlBase) {
       throw new Error('Matomo urlBase is required.')
     }
     if (!userOptions.siteId) {
       throw new Error('Matomo siteId is required.')
     }
-
-    this.initialize(userOptions)
   }
 
   private initialize({
@@ -37,21 +41,16 @@ class MatomoTracker {
     heartBeat,
     linkTracking = true,
     configurations = {},
-  }: UserOptions) {
-    const normalizedUrlBase =
-      urlBase[urlBase.length - 1] !== '/' ? `${urlBase}/` : urlBase
-
+  }: UserOptions): void {
     if (typeof window === 'undefined') {
       return
     }
 
+    const normalizedUrlBase = urlBase.endsWith('/') ? urlBase : `${urlBase}/`
+
     window._paq = window._paq || []
 
-    if (window._paq.length !== 0) {
-      return
-    }
-
-    if (disabled) {
+    if (window._paq.length !== 0 || disabled) {
       return
     }
 
@@ -59,31 +58,34 @@ class MatomoTracker {
       'setTrackerUrl',
       trackerUrl ?? `${normalizedUrlBase}matomo.php`,
     )
-
     this.pushInstruction('setSiteId', siteId)
 
     if (userId) {
       this.pushInstruction('setUserId', userId)
     }
 
+    // Apply configurations
     Object.entries(configurations).forEach(([name, instructions]) => {
-      if (instructions instanceof Array) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+      if (Array.isArray(instructions)) {
         this.pushInstruction(name, ...instructions)
       } else {
         this.pushInstruction(name, instructions)
       }
     })
 
-    // accurately measure the time spent on the last pageview of a visit
-    if (!heartBeat || (heartBeat && heartBeat.active)) {
-      this.enableHeartBeatTimer((heartBeat && heartBeat.seconds) ?? 15)
+    // Enable heartbeat timer if active
+    if (!heartBeat || heartBeat.active) {
+      this.enableHeartBeatTimer(heartBeat?.seconds ?? 15)
     }
 
-    // // measure outbound links and downloads
-    // // might not work accurately on SPAs because new links (dom elements) are created dynamically without a server-side page reload.
+    // Enable link tracking
     this.enableLinkTracking(linkTracking)
 
+    // Inject Matomo script
+    this.injectMatomoScript(normalizedUrlBase, srcUrl)
+  }
+
+  private injectMatomoScript(normalizedUrlBase: string, srcUrl?: string): void {
     const doc = document
     const scriptElement = doc.createElement('script')
     const scripts = doc.getElementsByTagName('script')[0]
@@ -93,9 +95,7 @@ class MatomoTracker {
     scriptElement.defer = true
     scriptElement.src = srcUrl || `${normalizedUrlBase}matomo.js`
 
-    if (scripts && scripts.parentNode) {
-      scripts.parentNode.insertBefore(scriptElement, scripts)
-    }
+    scripts?.parentNode?.insertBefore(scriptElement, scripts)
   }
 
   enableHeartBeatTimer(seconds: number): void {
@@ -106,46 +106,53 @@ class MatomoTracker {
     this.pushInstruction('enableLinkTracking', active)
   }
 
-  private trackEventsForElements(elements: HTMLElement[]) {
-    if (elements.length) {
-      elements.forEach((element) => {
-        element.addEventListener('click', () => {
-          const { matomoCategory, matomoAction, matomoName, matomoValue } =
-            element.dataset
-          if (matomoCategory && matomoAction) {
-            this.trackEvent({
-              category: matomoCategory,
-              action: matomoAction,
-              name: matomoName,
-              value: Number(matomoValue),
-            })
-          } else {
-            throw new Error(
-              `Error: data-matomo-category and data-matomo-action are required.`,
-            )
-          }
-        })
+  private trackEventsForElements(elements: HTMLElement[]): void {
+    elements.forEach((element) => {
+      // Skip if we've already tracked this element
+      if (this.trackedElements.has(element)) return
+
+      // Mark this element as tracked
+      this.trackedElements.add(element)
+
+      element.addEventListener('click', () => {
+        const { matomoCategory, matomoAction, matomoName, matomoValue } =
+          element.dataset
+
+        if (matomoCategory && matomoAction) {
+          this.trackEvent({
+            category: matomoCategory,
+            action: matomoAction,
+            name: matomoName,
+            value: matomoValue ? Number(matomoValue) : undefined,
+          })
+        } else {
+          throw new Error(
+            'Error: data-matomo-category and data-matomo-action are required.',
+          )
+        }
       })
-    }
+    })
   }
 
   // Tracks events based on data attributes
   trackEvents(): void {
     const matchString = '[data-matomo-event="click"]'
-    let firstTime = false
+    let isFirstTimeObserving = false
+
     if (!this.mutationObserver) {
-      firstTime = true
+      isFirstTimeObserving = true
       this.mutationObserver = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
           mutation.addedNodes.forEach((node) => {
-            // only track HTML elements
+            // Only track HTML elements
             if (!(node instanceof HTMLElement)) return
 
-            // check the inserted element for being a code snippet
+            // Check the inserted element itself
             if (node.matches(matchString)) {
               this.trackEventsForElements([node])
             }
 
+            // Check child elements
             const elements = Array.from(
               node.querySelectorAll<HTMLElement>(matchString),
             )
@@ -154,10 +161,11 @@ class MatomoTracker {
         })
       })
     }
+
     this.mutationObserver.observe(document, { childList: true, subtree: true })
 
-    // Now track all already existing elements
-    if (firstTime) {
+    // Track existing elements on first initialization
+    if (isFirstTimeObserving) {
       const elements = Array.from(
         document.querySelectorAll<HTMLElement>(matchString),
       )
@@ -166,9 +174,14 @@ class MatomoTracker {
   }
 
   stopObserving(): void {
-    if (this.mutationObserver) {
-      this.mutationObserver.disconnect()
-    }
+    this.mutationObserver?.disconnect()
+  }
+
+  // Clean up all resources
+  destroy(): void {
+    this.stopObserving()
+    // We don't remove event listeners since we don't keep references to them
+    // If needed, we could store them and clean them up here
   }
 
   // Tracks events
@@ -180,14 +193,14 @@ class MatomoTracker {
     value,
     ...otherParams
   }: TrackEventParams): void {
-    if (category && action) {
-      this.track({
-        data: [TRACK_TYPES.TRACK_EVENT, category, action, name, value],
-        ...otherParams,
-      })
-    } else {
-      throw new Error(`Error: category and action are required.`)
+    if (!category || !action) {
+      throw new Error('Error: category and action are required.')
     }
+
+    this.track({
+      data: [TRACK_TYPES.TRACK_EVENT, category, action, name, value],
+      ...otherParams,
+    })
   }
 
   // Tracks site search
@@ -198,14 +211,14 @@ class MatomoTracker {
     count,
     ...otherParams
   }: TrackSiteSearchParams): void {
-    if (keyword) {
-      this.track({
-        data: [TRACK_TYPES.TRACK_SEARCH, keyword, category, count],
-        ...otherParams,
-      })
-    } else {
-      throw new Error(`Error: keyword is required.`)
+    if (!keyword) {
+      throw new Error('Error: keyword is required.')
     }
+
+    this.track({
+      data: [TRACK_TYPES.TRACK_SEARCH, keyword, category, count],
+      ...otherParams,
+    })
   }
 
   // Tracks outgoing links to other sites and downloads
@@ -318,7 +331,7 @@ class MatomoTracker {
         Array.isArray(customDimensions) &&
         customDimensions.length
       ) {
-        customDimensions.map((customDimension: CustomDimension) =>
+        customDimensions.forEach((customDimension: CustomDimension) =>
           this.pushInstruction(
             'setCustomDimension',
             customDimension.id,
@@ -329,7 +342,7 @@ class MatomoTracker {
 
       this.pushInstruction('setCustomUrl', href ?? window.location.href)
       this.pushInstruction('setDocumentTitle', documentTitle)
-      this.pushInstruction(...(data as [string, ...any[]]))
+      this.pushInstruction(...(data as [string, ...unknown[]]))
     }
   }
 
@@ -350,9 +363,8 @@ class MatomoTracker {
    * @param name The name of the instruction to be executed.
    * @param args The arguments to pass along with the instruction.
    */
-  pushInstruction(name: string, ...args: any[]): MatomoTracker {
+  pushInstruction(name: string, ...args: unknown[]): MatomoTracker {
     if (typeof window !== 'undefined') {
-      // eslint-disable-next-line
       window._paq.push([name, ...args])
     }
 

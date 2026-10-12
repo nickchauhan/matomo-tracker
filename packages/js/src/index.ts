@@ -1,9 +1,10 @@
 import MatomoTracker from './MatomoTracker'
 import * as types from './types'
 
+// Extend Window interface to include _paq property
 declare global {
   interface Window {
-    _paq: [string, ...any[]][]
+    _paq: any[][]
   }
 }
 
